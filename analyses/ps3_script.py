@@ -26,35 +26,40 @@ y = df["PurePremium"]
 
 
 # TODO: use your create_sample_split function here
-# df = create_sample_split(...)
+df = create_sample_split(df, "IDpol")
 train = np.where(df["sample"] == "train")
 test = np.where(df["sample"] == "test")
 df_train = df.iloc[train].copy()
 df_test = df.iloc[test].copy()
 
+# define the categorical variables to pass through a categoriser
 categoricals = ["VehBrand", "VehGas", "Region", "Area", "DrivAge", "VehAge", "VehPower"]
 
 predictors = categoricals + ["BonusMalus", "Density"]
 glm_categorizer = Categorizer(columns=categoricals)
 
+# extract the labels and features for train and test datasets
 X_train_t = glm_categorizer.fit_transform(df[predictors].iloc[train])
 X_test_t = glm_categorizer.transform(df[predictors].iloc[test])
 y_train_t, y_test_t = y.iloc[train], y.iloc[test]
 w_train_t, w_test_t = weight[train], weight[test]
 
+# define the distribution and fit a GLM on the training dataset
 TweedieDist = TweedieDistribution(1.5)
 t_glm1 = GeneralizedLinearRegressor(family=TweedieDist, l1_ratio=1, fit_intercept=True)
 t_glm1.fit(X_train_t, y_train_t, sample_weight=w_train_t)
 
-
+# export the model results as a dataframe
 pd.DataFrame(
     {"coefficient": np.concatenate(([t_glm1.intercept_], t_glm1.coef_))},
     index=["intercept"] + t_glm1.feature_names_,
 ).T
 
+# make predictions on the both datasets using our fitted model
 df_test["pp_t_glm1"] = t_glm1.predict(X_test_t)
 df_train["pp_t_glm1"] = t_glm1.predict(X_train_t)
 
+# report the prediction error in the training dataset
 print(
     "training loss t_glm1:  {}".format(
         TweedieDist.deviance(y_train_t, df_train["pp_t_glm1"], sample_weight=w_train_t)
@@ -62,12 +67,14 @@ print(
     )
 )
 
+# report the prediction error in the testing dataset
 print(
     "testing loss t_glm1:  {}".format(
         TweedieDist.deviance(y_test_t, df_test["pp_t_glm1"], sample_weight=w_test_t)
         / np.sum(w_test_t)
     )
 )
+
 
 print(
     "Total claim amount on test set, observed = {}, predicted = {}".format(

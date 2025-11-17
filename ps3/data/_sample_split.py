@@ -4,7 +4,7 @@ import numpy as np
 
 # TODO: Write a function which creates a sample split based in some id_column and training_frac.
 # Optional: If the dtype of id_column is a string, we can use hashlib to get an integer representation.
-def create_sample_split(df, id_column, training_frac=0.8):
+def create_sample_split(df, id_column, training_frac=0.9):
     """Create sample split based on ID column.
 
     Parameters
@@ -33,6 +33,7 @@ def create_sample_split(df, id_column, training_frac=0.8):
 
     # hash below threshold -> bin into train dataset
     # hash above threshold -> bin into test dataset
+    # add the assignment as a new column in the dataset
     df['sample'] = np.where(bins < train_threshold, 'train', 'test')
 
     return df
