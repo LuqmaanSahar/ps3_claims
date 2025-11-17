@@ -8,7 +8,7 @@ from lightgbm import LGBMRegressor
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import auc
 from sklearn.model_selection import GridSearchCV
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import OneHotEncoder, SplineTransformer, StandardScaler
 
 from ps3.data import create_sample_split, load_transform
@@ -24,8 +24,10 @@ df["PurePremium"] = df["ClaimAmountCut"] / df["Exposure"]
 y = df["PurePremium"]
 # TODO: Why do you think, we divide by exposure here to arrive at our outcome variable?
 
+# this is to compute the 'claim frequency per year' rather than just the raw number of claims
 
-# TODO: use your create_sample_split function here
+
+# TODO: use your create_sample_split function here (done)
 df = create_sample_split(df, "IDpol")
 train = np.where(df["sample"] == "train")
 test = np.where(df["sample"] == "test")
@@ -45,6 +47,9 @@ y_train_t, y_test_t = y.iloc[train], y.iloc[test]
 w_train_t, w_test_t = weight[train], weight[test]
 
 # define the distribution and fit a GLM on the training dataset
+# the parameter 1.5 for the Tweedie distribution was arbitrarily chosen
+# we could include this as a parameter in a grid search to determine the best
+# performing set of model parameters 
 TweedieDist = TweedieDistribution(1.5)
 t_glm1 = GeneralizedLinearRegressor(family=TweedieDist, l1_ratio=1, fit_intercept=True)
 t_glm1.fit(X_train_t, y_train_t, sample_weight=w_train_t)
@@ -59,7 +64,7 @@ pd.DataFrame(
 df_test["pp_t_glm1"] = t_glm1.predict(X_test_t)
 df_train["pp_t_glm1"] = t_glm1.predict(X_train_t)
 
-# report the prediction error in the training dataset
+# report the prediction error (deviance) in the training dataset
 print(
     "training loss t_glm1:  {}".format(
         TweedieDist.deviance(y_train_t, df_train["pp_t_glm1"], sample_weight=w_train_t)
@@ -67,7 +72,7 @@ print(
     )
 )
 
-# report the prediction error in the testing dataset
+# report the prediction error (deviance) in the testing dataset
 print(
     "testing loss t_glm1:  {}".format(
         TweedieDist.deviance(y_test_t, df_test["pp_t_glm1"], sample_weight=w_test_t)
@@ -75,7 +80,7 @@ print(
     )
 )
 
-
+# total predicted vs. true claim amount on the test set
 print(
     "Total claim amount on test set, observed = {}, predicted = {}".format(
         df["ClaimAmountCut"].values[test].sum(),
@@ -91,18 +96,27 @@ print(
 # 2. Put the transforms together into a ColumnTransformer. Here we use OneHotEncoder for the categoricals.
 # 3. Chain the transforms together with the GLM in a Pipeline.
 
+# create a pipeline for numerical variables
+num_pipeline = make_pipeline(
+    StandardScaler(),
+    SplineTransformer(n_knots=5, degree=3, include_bias=False, knots="quantile")
+    ) # send numeric through a spline transformer and standard scaler
+
 # Let's put together a pipeline
 numeric_cols = ["BonusMalus", "Density"]
 preprocessor = ColumnTransformer(
     transformers=[
-        # TODO: Add numeric transforms here
-        ("cat", OneHotEncoder(sparse_output=False, drop="first"), categoricals),
+        ("num", num_pipeline, numeric_cols), # send numeric variables through our numeric pipeline
+        ("cat", OneHotEncoder(sparse_output=False, drop="first"), categoricals) # send categoricals through a onehotencoder
     ]
 )
-preprocessor.set_output(transform="pandas")
-model_pipeline = Pipeline(
-    # TODO: Define pipeline steps here
-)
+preprocessor.set_output(transform="pandas") # output as a pd.DataFrame
+
+# a model pipeline to chain preprocessing -> model fitting
+model_pipeline = Pipeline(steps=[
+    ("preprocess", preprocessor),
+    ("estimate", t_glm1)
+])
 
 # let's have a look at the pipeline
 model_pipeline
@@ -112,6 +126,7 @@ model_pipeline[:-1].fit_transform(df_train)
 
 model_pipeline.fit(df_train, y_train_t, estimate__sample_weight=w_train_t)
 
+# save the estimates
 pd.DataFrame(
     {
         "coefficient": np.concatenate(
@@ -121,9 +136,11 @@ pd.DataFrame(
     index=["intercept"] + model_pipeline[-1].feature_names_,
 ).T
 
+# make predictions using the fitted model
 df_test["pp_t_glm2"] = model_pipeline.predict(df_test)
 df_train["pp_t_glm2"] = model_pipeline.predict(df_train)
 
+# print deviance for model evaluation
 print(
     "training loss t_glm2:  {}".format(
         TweedieDist.deviance(y_train_t, df_train["pp_t_glm2"], sample_weight=w_train_t)
@@ -151,9 +168,18 @@ print(
 # 1: Define the modelling pipeline. Tip: This can simply be a LGBMRegressor based on X_train_t from before.
 # 2. Make sure we are choosing the correct objective for our estimator.
 
-model_pipeline.fit(X_train_t, y_train_t, estimate__sample_weight=w_train_t)
-df_test["pp_t_lgbm"] = model_pipeline.predict(X_test_t)
-df_train["pp_t_lgbm"] = model_pipeline.predict(X_train_t)
+
+# don't include preprocessing in this pipeline
+model_pipeline_lgbm = Pipeline([
+    ("lgbm", LGBMRegressor(
+        objective="tweedie",
+        tweedie_variance_power=1.5
+    ))
+])
+
+model_pipeline_lgbm.fit(X_train_t, y_train_t, lgbm__sample_weight=w_train_t)
+df_test["pp_t_lgbm"] = model_pipeline_lgbm.predict(X_test_t)
+df_train["pp_t_lgbm"] = model_pipeline_lgbm.predict(X_train_t)
 print(
     "training loss t_lgbm:  {}".format(
         TweedieDist.deviance(y_train_t, df_train["pp_t_lgbm"], sample_weight=w_train_t)
@@ -177,14 +203,28 @@ print(
 # Note: Typically we tune many more parameters and larger grids,
 # but to save compute time here, we focus on getting the learning rate
 # and the number of estimators somewhat aligned -> tune learning_rate and n_estimators
+
+# define the grid of parameters to search upon
+param_grid = {
+    "lgbm__learning_rate": [0.1, 0.05, 0.01],
+    "lgbm__n_estimators": [100, 300, 500]
+}
+
+# conduct the grid search using the earlier defined model pipeline
 cv = GridSearchCV(
-
+    estimator=model_pipeline_lgbm,
+    param_grid=param_grid,
+    cv=3,
+    scoring=None,          # LightGBM uses built-in loss internally
+    n_jobs=-1
 )
-cv.fit(X_train_t, y_train_t, estimate__sample_weight=w_train_t)
+cv.fit(X_train_t, y_train_t, lgbm__sample_weight=w_train_t)
 
+# make predictions using the best scoring model
 df_test["pp_t_lgbm"] = cv.best_estimator_.predict(X_test_t)
 df_train["pp_t_lgbm"] = cv.best_estimator_.predict(X_train_t)
 
+# evaluate
 print(
     "training loss t_lgbm:  {}".format(
         TweedieDist.deviance(y_train_t, df_train["pp_t_lgbm"], sample_weight=w_train_t)
