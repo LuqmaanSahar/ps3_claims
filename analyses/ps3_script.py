@@ -526,3 +526,72 @@ pdp_constrained.plot(pdp_unconstrained)
 # The unconstrained plot tends to predict lower claims on average
 
 # %%
+
+# EXERCISE 5: SHAPLEY VALUES
+
+# We will use the GLM (t_glm1)and compare it to the constrained GBM (best_gbm_constrained)
+
+
+# -----------------------------
+# 1. Define Explainer objects
+# -----------------------------
+
+# Pick one observation from test data (first row)
+# This is the prediction that we will analyse using Shapley values
+row_index = 0
+x_row = X_test_t.iloc[[row_index]] 
+
+# Outcome for that row (just for reference)
+y_row = y_test_t.iloc[row_index]
+
+# Explainer for GLM
+exp_glm = dx.Explainer(
+    model=model_pipeline,   # The GLM was defined as part of a pipeline
+    data=X_test_t,
+    y=y_test_t,
+    label="GLM"
+)
+
+# Explainer for constrained LGBM
+exp_constrained = dx.Explainer(
+    model=best_gbm_constrained,
+    data=X_test_t,
+    y=y_test_t,
+    label="LGBM Constrained"
+)
+
+# -----------------------------------------------
+# 2. Compute SHAP-based prediction decomposition
+# -----------------------------------------------
+
+shap_glm = exp_glm.predict_parts(
+    x_row, 
+    type="shap"
+)
+
+shap_lgbm = exp_constrained.predict_parts(
+    x_row, 
+    type="shap"
+)
+
+# The Shapley values show us the marginal contribution of each feature to the final prediction
+# We start at the average, and each feature can move us away from it depending on its value
+
+# -------------------------
+# 3. Plot both decompositions
+# -------------------------
+
+shap_glm.plot()
+shap_lgbm.plot()
+
+# These plots will show us the contribution of each feature
+# to the final prediction of the data in the first row.
+
+
+# We can observe that the GBM and GLM do behave differently
+# They disagree about both the direction and absolute contribution of most features
+
+# However, both models agree that BonusMalus had the largest impact
+# and that this impact was strongly negative on the prediction.
+
+# %%
