@@ -1,9 +1,12 @@
 # %%
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from dask_ml.preprocessing import Categorizer
 from glum import GeneralizedLinearRegressor, TweedieDistribution
+import lightgbm as lgb
 from lightgbm import LGBMRegressor
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import auc
@@ -296,4 +299,170 @@ ax.set(
 ax.legend(loc="upper left")
 plt.plot()
 
+# %%
+
+#########################
+##### PROBLEM SET 3 #####
+#########################
+
+# %%
+
+# EXERCISE 1: IMPOSING MONOTONICITY CONSTRAINTS
+
+# We expect the feature 'BonusMalus' to be monotonically increasing
+# However, complex predictive models (GBM) are free to learn non-monotonic patterns and interactions
+# To be consistent with our prior knowledge, we impose a monotonicity constraint on this feature.
+
+# create a folder to save outputs
+plots_dir = os.path.join(os.getcwd(), "outputs")
+os.makedirs(plots_dir, exist_ok=True)
+
+# Weighted average claim amount per BonusMalus bin
+# If the data is already monotonically increasing then we have no issue
+# If it is not, then interactions in the model can lead to unexpected behaviour
+avg_claims = (
+    df_train
+    .groupby("BonusMalus")
+    .apply(lambda g: np.sum(g["ClaimAmountCut"] * g["Exposure"]) / np.sum(g["Exposure"]))
+)
+
+avg_claims.plot(kind="line", marker="o")
+plt.xlabel("BonusMalus")
+plt.ylabel("Weighted average claim amount")
+plt.title("Empirical claim cost vs BonusMalus")
+plt.grid(True)
+file_path = os.path.join(plots_dir, "BonusMalus.png")
+plt.savefig(file_path, dpi=300, bbox_inches="tight")
+plt.show()
+
+# We observe that there are oscillations. The plot is not monotonically increasing
+# We need to add a monotonicity constraint to the model.
+# %%
+
+# To add the monotonicity constraints we pass a list to LGBM to indicate features
+# The list must be ordered in the same way that the model sees the features
+# +1 -> monotonically increasing
+# -1 -> monotonically decreasing
+# 0 -> no monotonicity constraint
+
+# Retrieve the lost of all features in the dataset
+feature_names = X_train_t.columns.tolist()
+feature_names
+
+# Find the index position of BonusMalus
+bonusmalus_index = feature_names.index("BonusMalus")
+bonusmalus_index
+
+# Create a list of zeroes, with a 1 at the position of BonusMalus
+monotonic_constraints = [0] * len(feature_names)
+monotonic_constraints[bonusmalus_index] = 1
+
+# Pass the list of monotonicity constraints into the model pipeline
+pipeline_lgbm_constrained = Pipeline([
+    ("lgbm_constrained", LGBMRegressor(
+        objective="tweedie",
+        tweedie_variance_power=1.5,
+        monotone_constraints=monotonic_constraints
+    ))
+])
+
+# Now we continue as normal
+
+# define parameter grid for hyperparameter tuning
+param_grid = {
+    "lgbm_constrained__learning_rate": [0.1, 0.05, 0.01],
+    "lgbm_constrained__n_estimators": [100, 300, 500]
+}
+
+# conduct the grid search
+cv_constrained = GridSearchCV(
+    estimator=pipeline_lgbm_constrained,
+    param_grid=param_grid,
+    cv=3,
+    scoring=None,          # LightGBM uses built-in loss internally
+    n_jobs=-1
+)
+cv_constrained.fit(X_train_t, y_train_t, lgbm_constrained__sample_weight=w_train_t)
+
+# make predictions using the best scoring model
+df_test["pp_t_lgbm_constrained"] = cv_constrained.best_estimator_.predict(X_test_t)
+df_train["pp_t_lgbm_constrained"] = cv_constrained.best_estimator_.predict(X_train_t)
+
+# evaluate
+print(
+    "training loss t_lgbm_constrained:  {}".format(
+        TweedieDist.deviance(y_train_t, df_train["pp_t_lgbm_constrained"], sample_weight=w_train_t)
+        / np.sum(w_train_t)
+    )
+)
+
+print(
+    "testing loss t_lgbm_constrained:  {}".format(
+        TweedieDist.deviance(y_test_t, df_test["pp_t_lgbm_constrained"], sample_weight=w_test_t)
+        / np.sum(w_test_t)
+    )
+)
+
+print(
+    "Total claim amount on test set, observed = {}, predicted = {}".format(
+        df["ClaimAmountCut"].values[test].sum(),
+        np.sum(df["Exposure"].values[test] * df_test["pp_t_lgbm_constrained"]),
+    )
+)
+
+# %%
+
+# EXERCISE 2: LEARNING CURVES
+
+# For an iterative model, we can plot its progress over iterations using learning curves
+# We will re-use the best model from the cross validation in the last exercise
+
+# Retrieve the best estimator from the cross validation
+best = cv_constrained.best_estimator_
+
+# extra step to extract just the model if it is part of a Pipeline object
+if isinstance(best, Pipeline):
+    lgbm_est = best.named_steps.get("lgbm_constrained", None)
+    if lgbm_est is None:
+        raise ValueError("Pipeline found but no step named 'lgbm_constrained'. Inspect best.named_steps.")
+else:
+    lgbm_est = best
+
+# Combine the train and test sets to create a master dataset to use for model evaluation
+eval_set = [(X_train_t, y_train_t), (X_test_t, y_test_t)]
+eval_sample_weight = [w_train_t, w_test_t]
+
+# set verbose for informative training
+# verbose controls how much LightGBM prints during training
+lgbm_est.set_params(verbose=50)  # or 0 / -1 to silence
+
+# If your estimator came from GridSearchCV you might want to set n_estimators to a value,
+# or keep the one selected by CV.
+# Refit the estimator with eval_set so we can capture the learning curve
+lgbm_est.fit(
+    X_train_t,
+    y_train_t,
+    sample_weight=w_train_t,
+    eval_set=eval_set,
+    eval_sample_weight=eval_sample_weight,
+    eval_metric="tweedie",            # metric consistent with tweedie objective
+)
+
+# Retrieve the per-iteration evaluation results from LGBM
+# sklearn wrapper stores results in .evals_result_
+evals_result = lgbm_est.evals_result_
+
+# Plot the learning curve(s)
+fig, ax = plt.subplots(figsize=(10, 6))
+
+# lgb.plot_metric accepts either an evals_result dict or a booster. Here we pass evals_result.
+# If you want to plot all recorded metrics, omit metric=... ; specifying metric will plot that one only.
+lgb.plot_metric(evals_result, metric="tweedie", ax=ax)
+
+ax.set_title("Learning curve (train vs validation) — Tweedie metric")
+ax.grid(True)
+
+file_path = os.path.join(plots_dir, "LGBM_Learning_Curve.png")
+plt.savefig(file_path, dpi=300, bbox_inches="tight")
+plt.show()
 # %%
