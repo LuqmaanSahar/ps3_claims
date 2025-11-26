@@ -1,25 +1,24 @@
 name: ps3
 channels:
-  - conda-forge
-  - nodefaults
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
 dependencies:
-  # defaults
-  - python>=3.8
-  - pip
-  - pre-commit
-  - pytest>=6  # Adds --import-mode option
+  - glum
+  - pandas
+  - scikit-learn
+  - lightgbm
+  - ydata-profiling
+  - pytest[version='>=6']
+  - python[version='>=3.8']
   - pytest-cov
   - setuptools-scm
-  # data
-  - pandas
-  - numpy
-  - dask-ml
-  - ydata-profiling
-  # interactive
   - ipykernel
-  # plots
+  - pre-commit
+  - dask-ml
+  - numpy[version='<2']
   - matplotlib
-  # ml
-  - glum
-  - lightgbm
-  - scikit-learn
+  - pip
+  - huggingface_hub
+  - dalex
+  - nbformat
+prefix: /Users/lsahar/miniconda3/envs/ps3

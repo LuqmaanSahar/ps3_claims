@@ -13,6 +13,7 @@ from sklearn.metrics import auc
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import OneHotEncoder, SplineTransformer, StandardScaler
+import dalex as dx
 
 from ps3.data import create_sample_split, load_transform
 
@@ -465,4 +466,63 @@ ax.grid(True)
 file_path = os.path.join(plots_dir, "LGBM_Learning_Curve.png")
 plt.savefig(file_path, dpi=300, bbox_inches="tight")
 plt.show()
+
+# We can interpret the learning curve as follows:
+
+# We fit training and validation errors following each iteration
+# We expect the errors to be decreasing over iterations
+
+# We are looking out for model overfitting or underfitting
+# Overfitting -> Training errors are decreasing, but validation errors are steady, or increasing
+# Underfitting -> Both training and validation errors stay high
+
+# In this example, we observe that the training error continues to fall over iterations
+# The validation error is initially falling, and then it stabilises
+
+# Together, these indicate a good model that is neither overfit nor underfit
+# This does not mean that it is a perfect model.
+# There may be some models that can stabilise at a lower validation error.
+# %%
+
+# EXERCISE 4: EVALUATION PLOTS
+
+# I will use DALEX to plot Partial Dependence Plots (PDP) for the constrained and unconstrained GBMs
+
+# I use the test dataset to measure out-of-sample performance and behaviour
+
+# Retrieve our two best models
+best_gbm = cv.best_estimator_
+best_gbm_constrained = cv_constrained.best_estimator_
+
+# Create explainers for both models
+# This provides DALEX with all of the model info it needs to compute metrics
+exp_constrained = dx.Explainer(
+    model=best_gbm_constrained,
+    data=X_test_t,
+    y=y_test_t,
+    label="LGBM Constrained"
+)
+
+exp_unconstrained = dx.Explainer(
+    model=best_gbm,
+    data=X_test_t,
+    y=y_test_t,
+    label="LGBM Unconstrained"
+)
+
+# Compute PDP (average marginal effects) for all features in both models
+pdp_constrained = exp_constrained.model_profile(type='partial')
+pdp_unconstrained = exp_unconstrained.model_profile(type='partial')
+
+# This will compute the ceteris paribus metrics for every feature, and then takes tha average
+# This results in an estimate for the PDP of each model
+
+# Plot the PDP for both models
+pdp_constrained.plot(pdp_unconstrained)
+
+# Now we can see how constraining the model has impacted BonusMalus
+# In the constrained plot, the effect on predictions is monotonically increasing
+# On the other hand, the unconstrained plot has no such restriction
+# The unconstrained plot tends to predict lower claims on average
+
 # %%
